@@ -2,6 +2,7 @@ import numpy as np
 import sys
 sys.path.append('..')
 from Code.fixed_income_derivatives_E2024 import *
+from scipy import optimize
 # Problem 2 a-f
 L_3M, L_6M = [0.01570161, 0.01980204]
 pi_af = np.array([102.33689177,104.80430234,105.1615306,105.6581905,104.02899992,101.82604116, 1, 1, 1])
@@ -80,5 +81,7 @@ print("ZCB_jk: ", ZCB_jk)
 
 #2.k)
 C_ZCB = [0, 0, 0, 0, 0, 1, 0, 0, 0]
-h_replica = np.linalg.inv(C) @ C_ZCB
+h_replica = optimize.minimize(lambda h: np.linalg.norm(C.T @ h - C_ZCB), np.zeros(10), tol=10**(-9)).x
 print("h_replica: ", h_replica)
+print("ZCB_replica: ", C.T @ h_replica)
+print("ZCB_pi: ", np.dot(h_replica, pi_jk))
