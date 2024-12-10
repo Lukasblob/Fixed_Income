@@ -1,6 +1,6 @@
 import numpy as np
 from scipy.stats import norm, ncx2
-from scipy.optimize import minimize
+from scipy.optimize import minimize, Bounds
 from scipy.special import ndtr, gammainc
 from numpy.polynomial.hermite import hermfit, hermval, hermder
 import copy
@@ -27,7 +27,7 @@ def spot_rates_from_zcb_prices(T,p):
     return r
 
 def forward_rates_from_zcb_prices(T,p,horizon = 1):
-    # horizon = 0 corresponds to approximated instantaneous forward rates
+    # horizon = 0 corresponds to approximated instantaneous forward rates. Note that the first entry of T is assumed to be T[0] = 0
     M = len(T)
     f = np.zeros([M])
     if horizon == 0:
@@ -68,13 +68,13 @@ def accrual_factor_from_zcb_prices(t,T_n,T_N,fixed_freq,T,p):
             for i in range(1,int(T_N-T_n) + 1):
                 if T_n + i > t:
                     T_fix.append(T_n + i)
-    elif type(fixed_freq) == int or type(fixed_freq) == float or type(fixed_freq) == np.int32 or type(fixed_freq) == np.float64:
+    elif type(fixed_freq) == int or type(fixed_freq) == float or type(fixed_freq) == np.int32 or type(fixed_freq) == np.int64 or type(fixed_freq) == np.float64:
         for i in range(1,int((T_N-T_n)/fixed_freq) + 1):
             if T_n + i*fixed_freq > t:
                 T_fix.append(T_n + i*fixed_freq)
     p_fix = np.array(for_values_in_list_find_value_return_value(T_fix,T,p))
     T_fix = np.array(T_fix)
-    S = (T_fix[0] - t)*p_fix[0]
+    S = (T_fix[0] - T_n)*p_fix[0]
     for i in range(1,len(T_fix)):
         S += (T_fix[i] - T_fix[i-1])*p_fix[i]
     return S
@@ -82,7 +82,15 @@ def accrual_factor_from_zcb_prices(t,T_n,T_N,fixed_freq,T,p):
 def swap_rate_from_zcb_prices(t,T_n,T_N,fixed_freq,T,p,float_freq = 0,L = 0):
     S = accrual_factor_from_zcb_prices(t,T_n,T_N,fixed_freq,T,p)
     if t <= T_n:
-        [p_n,p_N] = for_values_in_list_find_value_return_value([T_n,T_N],T,p)
+        if T_n < 1e-6:
+            p_n = 1
+        else:
+            Ind_n, output_n = find_value_return_value(T_n,T,p)
+            if Ind_n == True:
+                p_n = output_n[0][1]
+        Ind_N, output_N = find_value_return_value(T_N,T,p)
+        if Ind_N == True:
+            p_N = output_N[0][1]
         R = (p_n-p_N)/S
     elif t > T_n:
         if float_freq == 0:
@@ -109,6 +117,44 @@ def swap_rate_from_zcb_prices(t,T_n,T_N,fixed_freq,T,p,float_freq = 0,L = 0):
                 print(f"WARNING! Not able to compute the par swap rate")
                 R = np.nan
     return R, S
+
+def spot_rate_bump(T_bump,size_bump,T,R_input,p_input):
+    R, p = R_input.copy(), p_input.copy()
+    if type(T_bump) == int or type(T_bump) == float or type(T_bump) == np.float64 or type(T_bump) == np.int32 or type(T_bump) == np.int64:
+        I_bump, idx_bump = value_in_list_returns_I_idx(T_bump,T)
+        R[idx_bump] = R[idx_bump] + size_bump
+        p[idx_bump] = np.exp(-R[idx_bump]*T_bump)
+    elif type(T_bump) == tuple or type(T_bump) == list or type(T_bump) == np.ndarray or type(T_bump) == np.int32 or type(T_bump) == np.int64:
+        if type(size_bump) == int or type(size_bump) == float or type(size_bump) == np.float64:
+            for i in range(0,len(T_bump)):
+                I_bump, idx_bump = value_in_list_returns_I_idx(T_bump[i],T)
+                R[idx_bump] = R[idx_bump] + size_bump
+                p[idx_bump] = np.exp(-R[idx_bump]*T_bump[i])
+        elif type(size_bump) == tuple or type(size_bump) == list or type(size_bump) == np.ndarray:
+            for i in range(0,len(T_bump)):
+                I_bump, idx_bump = value_in_list_returns_I_idx(T_bump[i],T)
+                R[idx_bump] = R[idx_bump] + size_bump[i]
+                p[idx_bump] = np.exp(-R[idx_bump]*T_bump[i])
+    return R, p
+
+def market_rate_bump(idx_bump,size_bump,T_inter,data,interpolation_options = {"method": "linear"}):
+    data_bump = copy.deepcopy(data)
+    if type(idx_bump) == int or type(idx_bump) == float or type(idx_bump) == np.float64 or type(idx_bump) == np.int32 or type(idx_bump) == np.int64:
+        data_bump[idx_bump]["rate"] += size_bump
+        T_fit_bump, R_fit_bump = zcb_curve_fit(data_bump,interpolation_options = interpolation_options)
+        p_inter_bump, R_inter_bump, f_inter_bump, T_inter_bump = zcb_curve_interpolate(T_inter,T_fit_bump,R_fit_bump,interpolation_options = interpolation_options)
+    elif type(idx_bump) == tuple or type(idx_bump) == list or type(idx_bump) == np.ndarray or type(idx_bump) == np.int32 or type(idx_bump) == np.int64:
+        if type(size_bump) == int or type(size_bump) == float or type(size_bump) == np.float64:
+            for i in range(0,len(idx_bump)):
+                data_bump[idx_bump[i]]["rate"] += size_bump
+            T_fit_bump, R_fit_bump = zcb_curve_fit(data_bump,interpolation_options = interpolation_options)
+            p_inter_bump, R_inter_bump, f_inter_bump, T_inter_bump = zcb_curve_interpolate(T_inter,T_fit_bump,R_fit_bump,interpolation_options = interpolation_options)
+        elif type(size_bump) == tuple or type(size_bump) == list or type(size_bump) == np.ndarray:
+            for i in range(0,len(idx_bump)):
+                data_bump[idx_bump[i]]["rate"] += size_bump[i]
+            T_fit_bump, R_fit_bump = zcb_curve_fit(data_bump,interpolation_options = interpolation_options)
+            p_inter_bump, R_inter_bump, f_inter_bump, T_inter_bump = zcb_curve_interpolate(T_inter,T_fit_bump,R_fit_bump,interpolation_options = interpolation_options)
+    return p_inter_bump, R_inter_bump, f_inter_bump, T_inter_bump, data_bump
 
 #  Fixed rate bond
 def macauley_duration(pv,T,C,ytm):
@@ -359,6 +405,24 @@ def simul_cir(r0,a,b,sigma,M,T,method = "exact"):
                 r[m] = r[m-1]
     return r
 
+def fit_cir_obj(param,R_star,T,scaling = 1):
+    r0, a, b, sigma = param
+    M = len(T)
+    R_fit = spot_rate_cir(r0,a,b,sigma,T)
+    y = 0
+    for m in range(0,M):
+        y += scaling*(R_fit[m] - R_star[m])**2
+    return y
+
+def fit_cir_no_sigma_obj(param,sigma,R_star,T,scaling = 1):
+    r0, a, b = param
+    M = len(T)
+    R_fit = spot_rate_cir(r0,a,b,sigma,T)
+    y = 0
+    for m in range(0,M):
+        y += scaling*(R_fit[m] - R_star[m])**2
+    return y
+
 # Vasicek short rate model
 def zcb_price_vasicek(r0,a,b,sigma,T):
     if type(T) == int or type(T) == float or type(T) == np.int32 or type(T) == np.float64:
@@ -378,7 +442,7 @@ def zcb_price_vasicek(r0,a,b,sigma,T):
     return p
 
 def spot_rate_vasicek(r0,a,b,sigma,T):
-    if type(T) == int or type(T) == float or type(T) == np.int32 or type(T) == np.float64:
+    if type(T) == int or type(T) == float or type(T) == np.int32 or type(T) == np.int64 or type(T) == np.float64:
         B = (1/a)*(1-np.exp(-a*T))
         A = (B-T)*(a*b-0.5*sigma**2)/(a**2)-(sigma**2*B)/(4*a)
         if T < 1e-6:
@@ -401,7 +465,7 @@ def spot_rate_vasicek(r0,a,b,sigma,T):
     return r
 
 def forward_rate_vasicek(r0,a,b,sigma,T):
-    if type(T) == int or type(T) == float or type(T) == np.int32 or type(T) == np.float64:
+    if type(T) == int or type(T) == float or type(T) == np.int32 or type(T) == np.int64 or type(T) == np.float64:
         B = (1/a)*(1-np.exp(-a*T))
         B_T = np.exp(-a*T)
         if T < 1e-6:
@@ -438,7 +502,7 @@ def stdev_vasicek(r0,a,b,sigma,T):
     return std
 
 def ci_vasicek(r0,a,b,sigma,T,size_ci,type_ci = "two_sided"):
-    if type(T) == int or type(T) == float or type(T) == np.int32 or type(T) == np.float64:
+    if type(T) == int or type(T) == float or type(T) == np.int32 or type(T) == np.int64 or type(T) == np.float64:
         if type_ci == "lower":
             z = norm.ppf(size_ci,0,1)
             if T < 1e-10:
@@ -561,73 +625,152 @@ def fit_vasicek_no_sigma_obj(param,sigma,R_star,T,scaling = 1):
         y += scaling*(R_fit[m] - R_star[m])**2
     return y
 
-# Fitting the initial term structure of forward rates (For use in the Ho-Lee and Hull-White extended Vasicek models)
-def theta(t,sigma,args):
-    if args["method"] == "nelson-siegel":
-        a = args["a"]
-        b = args["b"]
-        if type(t) == int or type(t) == float or type(t) == np.int32 or type(t) == np.float64:
-            K = len(a)
-            theta = -a[0]*b[0]*np.exp(-b[0]*t) + sigma**2*t
-            for k in range(1,K):
-                theta += a[k]*k*t**(k-1)*np.exp(-b[k]*t) - a[k]*b[k]*t**k*np.exp(-b[k]*t)
-        elif type(t) == tuple or type(t) == list or type(t) == np.ndarray:
-            K = len(a)
-            M = len(t)
-            theta = np.zeros([M])
-            for m in range(0,M):
-                theta[m] = -a[0]*b[0]*np.exp(-b[0]*t[m]) + sigma**2*t[m]
-                for k in range(1,K):
-                    theta[m] += a[k]*k*t[m]**(k-1)*np.exp(-b[k]*t[m]) - a[k]*b[k]*t[m]**k*np.exp(-b[k]*t[m])
-    if args["method"] == "empirical":
-        T = args["T"]
-        f_star_T = args["f_star_T"]
-        M, N = len(t), len(T)
-        theta = np.zeros([M])
-        i, j = 0, 0
-        while i < M:
-            while j < N:
-                if t[i] < T[j]:
-                    print(f"WARNING! Not able to compute theta for t: {t[i]}. t less than T, t: {t[i]}, T: {T[j]}")
-                    i += 1
-                elif T[j] <= t[i] <= T[j+1]:
-                    w_right = (t[i] - T[j])/(T[j+1]-T[j])
-                    theta[i] = w_right*f_star_T[j+1] + (1-w_right)*f_star_T[j]
-                    if i + 1 > M - 1:
-                        j = N
-                    i += 1
-                elif t[i] > T[j+1]:
-                    if j + 1 > N - 1:
-                        print(f"WARNING! Not able to compute theta for t: {t[i]}. t greater than T, t: {t[i]}, T: {T[j]}")
-                    else:
-                        j += 1
-    return theta
+# # Fitting the initial term structure of forward rates (For use in the Ho-Lee and Hull-White extended Vasicek models)
+# def theta(t,sigma,args):
+#     if args["model"] == "nelson-siegel":
+#         a = args["a"]
+#         b = args["b"]
+#         if type(t) == int or type(t) == float or type(t) == np.int32 or type(t) == np.int64 or type(t) == np.float64:
+#             K = len(a)
+#             theta = -a[0]*b[0]*np.exp(-b[0]*t) + sigma**2*t
+#             for k in range(1,K):
+#                 theta += a[k]*k*t**(k-1)*np.exp(-b[k]*t) - a[k]*b[k]*t**k*np.exp(-b[k]*t)
+#         elif type(t) == tuple or type(t) == list or type(t) == np.ndarray:
+#             K = len(a)
+#             M = len(t)
+#             theta = np.zeros([M])
+#             for m in range(0,M):
+#                 theta[m] = -a[0]*b[0]*np.exp(-b[0]*t[m]) + sigma**2*t[m]
+#                 for k in range(1,K):
+#                     theta[m] += a[k]*k*t[m]**(k-1)*np.exp(-b[k]*t[m]) - a[k]*b[k]*t[m]**k*np.exp(-b[k]*t[m])
+#     if args["model"] == "interpolation":
+#         # Takes a vector theta on some grid T an expands that vector to the grid in t by linear interpolation
+#         T = args["T"]
+#         theta_star = args["theta_star"]
+#         M, N = len(t), len(T)
+#         theta = np.zeros([M])
+#         i, j = 0, 0
+#         while i < M:
+#             while j < N:
+#                 if t[i] < T[j]:
+#                     print(f"WARNING! Not able to compute theta for t: {t[i]}. t less than T, t: {t[i]}, T: {T[j]}")
+#                     i += 1
+#                 elif T[j] <= t[i] <= T[j+1]:
+#                     w_right = (t[i] - T[j])/(T[j+1]-T[j])
+#                     theta[i] = w_right*theta_star[j+1] + (1-w_right)*theta_star[j]
+#                     if i + 1 > M - 1:
+#                         j = N
+#                     i += 1
+#                 elif t[i] > T[j+1]:
+#                     if j + 1 > N - 1:
+#                         print(f"WARNING! Not able to compute theta for t: {t[i]}. t greater than T, t: {t[i]}, T: {T[j]}")
+#                     else:
+#                         j += 1
+#     return theta
 
 # Ho-Lee model
-def simul_ho_lee(r0,theta_args,sigma,N,M,T,method = "euler"):
-    r = np.zeros([N,M+1])
-    r[0] = r0
+def euro_option_price_ho_lee(K,T1,T2,p_T1,p_T2,sigma,type = "call"):
+    sigma_p = sigma*(T2-T1)*np.sqrt(T1)
+    d1 = (np.log(p_T2/(p_T1*K)))/sigma_p + 0.5*sigma_p
+    d2 = d1 - sigma_p
+    if type == "call":
+        price = p_T2*ndtr(d1) - p_T1*K*ndtr(d2)
+    elif type == "put":
+        price = p_T1*K*ndtr(-d2) - p_T2*ndtr(-d1)
+    return price
+
+def caplet_prices_ho_lee(sigma,strike,T,p):
+    price_caplet = np.zeros([len(T)])
+    for i in range(2,len(T)):
+        price_caplet[i] = (1 + (T[i]-T[i-1])*strike)*euro_option_price_ho_lee(1/(1 + (T[i]-T[i-1])*strike),T[i-1],T[i],p[i-1],p[i],sigma,type = "put")
+    return price_caplet
+
+def ci_ho_lee(f,sigma,T,size_ci,type_ci = "two_sided"):
+
+    if type(T) == int or type(T) == float or type(T) == np.int32 or type(T) == np.int64 or type(T) == np.float64:
+        if type_ci == "lower":
+            z = norm.ppf(size_ci,0,1)
+            if T < 1e-10:
+                lb, ub = np.nan, np.nan
+            else:
+                mean = f + 0.5*sigma**2*T
+                std = sigma*np.sqrt(T)
+                lb, ub = mean - z*std, np.inf
+        elif type_ci == "upper":
+            z = norm.ppf(size_ci,0,1)
+            if T < 1e-10:
+                lb, ub = np.nan, np.nan
+            else:
+                mean = f + 0.5*sigma**2*T
+                std = sigma*np.sqrt(T)
+                lb, ub = -np.inf, mean + z*std
+        elif type_ci == "two_sided":
+            z = norm.ppf(size_ci + 0.5*(1-size_ci),0,1)
+            if T < 1e-10:
+                lb, ub = np.nan, np.nan
+            else:
+                mean = f + 0.5*sigma**2*T
+                std = sigma*np.sqrt(T)
+                lb, ub = mean - z*std, mean + z*std
+        print(f"type_ci: {type_ci}, z: {z}")
+    elif type(T) == tuple or type(T) == list or type(T) == np.ndarray:
+        N = len(T)
+        lb, ub = np.zeros([N]), np.zeros([N])
+        if type_ci == "lower":
+            z = norm.ppf(size_ci,0,1)
+            for i in range(0,N):
+                if T[i] < 1e-10:
+                    lb[i], ub[i] = np.nan, np.nan
+                else:
+                    mean = f[i] + 0.5*sigma**2*T[i]
+                    std = sigma*np.sqrt(T[i])
+                    lb[i], ub[i] = mean - z*std, np.inf
+        elif type_ci == "upper":
+            z = norm.ppf(size_ci,0,1)
+            for i in range(0,N):
+                if T[i] < 1e-10:
+                    lb[i], ub[i] = np.nan, np.nan
+                else:
+                    mean = f[i] + 0.5*sigma**2*T[i]
+                    std = sigma*np.sqrt(T[i])
+                    lb[i], ub[i] = -np.inf, mean + z*std
+        elif type_ci == "two_sided":
+            z = norm.ppf(size_ci + 0.5*(1-size_ci),0,1)
+            for i in range(0,N):
+                if T[i] < 1e-10:
+                    lb[i], ub[i] = np.nan, np.nan
+                else:
+                    mean = f[i] + 0.5*sigma**2*T[i]
+                    std = sigma*np.sqrt(T[i])
+                    lb[i], ub[i] = mean - z*std, mean + z*std
+    else:
+        print(f"T is not of recognized type")
+        lb,ub = False, False
+    return lb, ub
+
+def simul_ho_lee(r0,f_T,sigma,T,method = "euler",f = None,seed = None):
+    if seed is not None:
+        np.random.seed(seed)
+    M = len(f_T)
     delta = T/M
-    Z = np.random.standard_normal(size=(N,M))
-    if method == "euler":
-        delta_sqrt = np.sqrt(delta)
-        if theta_args["method"] == "nelson-siegel":
-            t = np.array([m*delta for m in range(0,M+1)])
-            theta_simul = theta(t,sigma,theta_args)
-            for n in range(0,N):
-                for m in range(1,M+1):
-                    r[n,m] = r[n,m-1] + theta_simul[m]*delta + sigma*delta_sqrt*Z[n,m-1]
-        elif theta_args["method"] == "empirical":
-            t = np.array([i*delta for i in range(0,M+1)])
-            theta_values = theta(t,sigma,theta_args)
-            for n in range(0,N):
-                for m in range(1,M+1):
-                    r[n,m] = r[n,m-1] + theta_values[m]*delta + sigma*delta_sqrt*Z[n,m-1]
+    delta_sqrt = np.sqrt(delta)
+    Z = np.random.standard_normal(M)
+    if method == "exact":
+        r, W = np.zeros(M), np.zeros(M)
+        r[0] = r0
+        for m in range(1,M):
+            W[m] = W[m-1] + delta_sqrt*Z[m-1]
+            r[m] = f[m] + 0.5*sigma**2*(m*delta)**2 + sigma*W[m]
+    elif method == "euler":
+        r = np.zeros(M)
+        r[0] = r0
+        for m in range(1,M):
+            r[m] = r[m-1] + (f_T[m-1] + sigma**2*(m-1)*delta)*delta + sigma*delta_sqrt*Z[m-1]
     return r
 
 # Nelson-Siegel function
 def F_ns(param,T):
-    if type(T) == int or type(T) == float or type(T) == np.int32 or type(T) == np.float64:
+    if type(T) == int or type(T) == float or type(T) == np.int32 or type(T) == np.int64 or type(T) == np.float64:
         f_inf, a, b = param
         K = len(a)
         F = f_inf*T + a[0]*np.exp(-b[0]*T)
@@ -645,7 +788,7 @@ def F_ns(param,T):
     return F
 
 def f_ns(param,T):
-    if type(T) == int or type(T) == float or type(T) == np.int32 or type(T) == np.float64:
+    if type(T) == int or type(T) == float or type(T) == np.int32 or type(T) == np.int64 or type(T) == np.float64:
         f_inf, a, b = param
         K = len(a)
         f = f_inf
@@ -831,7 +974,6 @@ def sigma_sabr(K,T,F_0,sigma_0,beta,upsilon,rho,type = "call"):
         z = (upsilon/sigma_0)*(F_0*K)**((1-beta)/2)*np.log(F_0/K)
         x = np.log((np.sqrt(1-2*rho*z+z**2) + z - rho)/(1-rho))
         D = (F_0*K)**((1-beta)/(2))*(1 + ((1-beta)**2/24)*np.log2(F_0/K) + ((1-beta)**4/1920)*np.emath.logn(4,F_0/K))
-        # print(z,x,D)
         A = 1 + (((1-beta)**2/24)*sigma_0**2*(F_0*K)**(beta-1) + (rho*beta*upsilon*sigma_0/4)*(F_0*K)**((beta-1)/2) + ((2-3*rho**2)/24)*upsilon**2)*T
         sigma = (sigma_0/D)*(z/x)*A
     return sigma
@@ -841,16 +983,11 @@ def sabr_simul(F_0,sigma_0,beta,upsilon,rho,M,T):
     sigma[0], F[0] = sigma_0, F_0
     delta = T/M
     Z = np.random.standard_normal([2,M])
-    # print(np.average(Z[1,:]),np.var(Z[1,:]))
     delta_sqrt = np.sqrt(delta)
     rho_sqrt = np.sqrt(1-rho**2)
     for m in range(1,M+1):
         F[m] = F[m-1] + sigma[m-1]*F[m-1]**beta*delta_sqrt*Z[0,m-1]
-        # if F[m] < 0:
-        #     F[m] = F[m-1]
         sigma[m] = sigma[m-1] + upsilon*sigma[m-1]*delta_sqrt*(rho*Z[0,m-1] + rho_sqrt*Z[1,m-1])
-        # if sigma[m] < 0:
-        #     sigma[m] = sigma[m-1]
     return F, sigma
 
 def fit_sabr_obj(param,sigma_market,K,T,R):
@@ -929,7 +1066,6 @@ def zcb_curve_fit(data_input,interpolation_options = {"method": "linear"},scalin
         for fra in fra_data:
             I_exer, known_exer = value_in_list_of_dict_returns_I_idx(fra["exercise"],data_known,"maturity")
             I_mat, known_mat = value_in_list_of_dict_returns_I_idx(fra["maturity"],data_known,"maturity")
-            # FIX the last few instances!!!!
             if I_exer == True and I_mat == False:
                 data_known.append({"maturity":fra["maturity"],"rate":(known_exer["rate"]*known_exer["maturity"]+np.log(1+(fra["maturity"]-fra["exercise"])*fra["rate"]))/fra["maturity"]})
                 I_done = False
@@ -946,6 +1082,7 @@ def zcb_curve_fit(data_input,interpolation_options = {"method": "linear"},scalin
     for known in data_known:
         T_known.append(known["maturity"])
         R_known.append(known["rate"])
+    # Finding T_swap - The times where there is a cashflow to at least one of the swaps.
     for swap in swap_data:
         T_knot.append(swap["maturity"])
         if swap["float_freq"] == "quarterly":
@@ -1016,16 +1153,16 @@ def zcb_curve_fit(data_input,interpolation_options = {"method": "linear"},scalin
         R_knot_init[i] = swap["rate"]
         i += 1
     args = (T_known,T_knot,T_swap_fit,R_known,swap_data,interpolation_options,1)
-    result = minimize(zcb_curve_swap_fit_obj,R_knot_init,args = args,options={'disp': False})
+    result = minimize(zcb_curve_swap_fit_obj,R_knot_init,method = 'nelder-mead',args = args,options={'xatol': 1e-6,'disp': False})
     T_swap_curve, R_swap_curve = T_known + T_knot, R_known + list(result.x)
     T_fra_fit = T_swap_curve + T_fra + T_endo
     T_fra_fit.sort()
-    R_fra_fit = interpolate(T_swap_curve,R_swap_curve,T_fra_fit,interpolation_options)
+    R_fra_fit, R_fra_fit_deriv = interpolate(T_fra_fit,T_swap_curve,R_swap_curve,interpolation_options)
     R_fra_init = [None]*len(T_fra)
     for i in range(0,len(T_fra)):
         R_fra_init[i] = R_fra_fit[value_in_list_returns_I_idx(T_fra[i],T_fra_fit)[1]]
     args = (T_fra,T_known,T_endo,T_fra_fit,R_fra_fit,fra_data,interpolation_options,scaling)
-    result = minimize(zcb_curve_fra_fit_obj,R_fra_init,args = args,options={'disp': False})
+    result = minimize(zcb_curve_fra_fit_obj,R_fra_init,method = 'nelder-mead',args = args,options={'xatol': 1e-6,'disp': False})
     R_fra = list(result.x)
     R_endo = R_T_endo_from_R_T_fra(R_fra,T_fra,T_endo,fra_data)
     for i in range(0,len(T_fra_fit)):
@@ -1038,68 +1175,205 @@ def zcb_curve_fit(data_input,interpolation_options = {"method": "linear"},scalin
                 R_fra_fit[i] = R_endo[idx_endo]
     return np.array(T_fra_fit), np.array(R_fra_fit)
 
-def zcb_curve_interpolate(T,R,interpolation_options = {"method":"linear"},resolution = 1):
-    T_inter = np.array([i*(1/(resolution*12)) for i in range(0,int(T[-1])*12*resolution + 1)])
+def zcb_curve_interpolate(T_inter,T,R,interpolation_options = {"method":"linear"}):
     N = len(T_inter)
     p_inter = np.ones([N])
     R_inter = np.zeros([N])
     f_inter = np.zeros([N])
-    if interpolation_options["method"] == "linear":
-        for n in range(1,N):
-            I_known, idx = value_in_list_returns_I_idx(T_inter[n],T)
-            if I_known == True:
-                R_inter[n] = R[idx]
-            else:
-                idx_before_x, idx_after_x = idx_before_after_in_list(T_inter[n],T)
-                R_inter[n] = ((T[idx_after_x]-T_inter[n])/(T[idx_after_x]-T[idx_before_x]))*R[idx_before_x] + ((T_inter[n]-T[idx_before_x])/(T[idx_after_x]-T[idx_before_x]))*R[idx_after_x]
-            p_inter[n] = np.exp(-R_inter[n]*T_inter[n])
-        for n in range(1,N):
-            if n < N-1:
-                f_inter[n] = (np.log(p_inter[n-1])-np.log(p_inter[n+1]))/(T_inter[n+1]-T_inter[n-1])
-            elif n == N - 1:
-                f_inter[n] = (np.log(p_inter[n-1])-np.log(p_inter[n]))/(T_inter[n]-T_inter[n-1])
-    elif interpolation_options["method"] == "hermite":
-        indices = []
-        for item in T:
-            I_idx, idx = value_in_list_returns_I_idx(item,T_inter)
-            if I_idx is True:
-                indices.append(value_in_list_returns_I_idx(item,T_inter)[1])
-        l, r = -int((interpolation_options["degree"]+1)/2),int(interpolation_options["degree"]/2)
-        for i in range(-l,-r+len(T)):
-            coef = hermfit(T[i+l:i+r+1],R[i+l:i+r+1],interpolation_options["degree"])
-            coef_der = hermder(coef)
-            for idx in range(indices[i+l],indices[i+r]+1):
-                R_inter[idx] = hermval(T_inter[idx],coef)
-                f_inter[idx] = hermval(T_inter[idx],coef_der)*T_inter[idx] + R_inter[idx]
-                p_inter[idx] = np.exp(-R_inter[idx]*T_inter[idx])
+    R_inter, R_inter_deriv = interpolate(T_inter,T,R,interpolation_options = interpolation_options)
+    for i in range(0,N):
+        f_inter[i] = R_inter[i] + R_inter_deriv[i]*T_inter[i]
+        p_inter[i] = np.exp(-R_inter[i]*T_inter[i])
     return p_inter, R_inter, f_inter, T_inter
 
-def interpolate(x,y,x_inter,interpolation_options = {"method":"linear"}):
-    N = len(x_inter)
-    y_inter = [None]*N
+def extrapolate(x_extra,x,y,extrapolation_options = {"method":"linear"}):
+    # Extrapoltion of value corresponding to a choice of x_extra
+    if extrapolation_options["method"] == "linear":
+        if x_extra < x[0]:
+            a = (y[1]-y[0])/(x[1]-x[0])
+            b = y[0]-a*x[0]
+            y_extra = a*x_extra + b
+            y_extra_deriv = a
+        elif x[-1] < x_extra:
+            a = (y[-1]-y[-2])/(x[-1]-x[-2])
+            b = y[-1]-a*x[-1]
+            y_extra = a*x_extra + b
+            y_extra_deriv = a
+        else:
+            print(f"WARNING! x_extra is inside the dataset")
+    elif extrapolation_options["method"] == "hermite":
+        if x_extra < x[0]:
+            coefs = hermfit(x[0:extrapolation_options["degree"]+1],y[0:extrapolation_options["degree"]+1],extrapolation_options["degree"])
+            y_extra, y_extra_deriv = hermval(x_extra,coefs), hermval(x_extra,hermder(coefs))
+        elif x[-1] < x_extra:
+            coefs = hermfit(x[-extrapolation_options["degree"]-1:],y[-extrapolation_options["degree"]-1:],extrapolation_options["degree"])
+            y_extra, y_extra_deriv = hermval(x_extra,coefs), hermval(x_extra,hermder(coefs))
+        else:
+            print(f"WARNING! x_extra is inside the dataset")
+    elif extrapolation_options["method"] == "nelson_siegel":
+        if x_extra < x[0]:
+            x1, x2 = x[1]-x[0], x[2]-x[0]
+            coefs = nelson_siegel_coef(x1,x2,y[0],y[1],y[2])
+            y_extra, y_extra_deriv = coefs[0]+coefs[1]*np.exp(-coefs[2]*(x_extra-x[0])), -coefs[1]*coefs[2]*np.exp(-coefs[2]*(x_extra-x[0]))
+        elif x[-1] < x_extra:
+            x1, x2 = x[-2]-x[-3], x[-1]-x[-3]
+            coefs = nelson_siegel_coef(x1,x2,y[-3],y[-2],y[-1])
+            y_extra, y_extra_deriv = coefs[0]+coefs[1]*np.exp(-coefs[2]*(x_extra-x[-3])), -coefs[1]*coefs[2]*np.exp(-coefs[2]*(x_extra-x[-3]))
+        else:
+            print(f"WARNING! x_extra is inside the dataset")
+    return y_extra, y_extra_deriv
+
+def interpolate(x_inter,x,y,interpolation_options = {"method":"linear", "transition": None}):
+    N, M = len(x_inter), len(x)
+    y_inter, y_inter_deriv = np.nan*np.ones([N]), np.nan*np.ones([N])
     if interpolation_options["method"] == "linear":
+        coefs = np.nan*np.ones([M,2])
+        for m in range(0,M-1):
+            coefs[m,1] = (y[m+1]-y[m])/(x[m+1]-x[m])
+            coefs[m,0] = y[m]-coefs[m,1]*x[m]
+        coefs[M-1,1] = (y[M-1] - y[M-2])/(x[M-1]-x[M-2])
+        coefs[M-1,0] = y[M-1] - coefs[M-1,1]*x[M-1]
         for n in range(0,N):
-            I_known, idx = value_in_list_returns_I_idx(x_inter[n],x)
-            if I_known == True:
-                y_inter[n] = y[idx]
+            if x_inter[n] < x[0] or x_inter[n] > x[M-1]:
+                extrapolate(x_inter[n],x,y,extrapolation_options = interpolation_options)
             else:
-                idx_before_x, idx_after_x = idx_before_after_in_list(x_inter[n],x)
-                y_inter[n] = ((x[idx_after_x]-x_inter[n])/(x[idx_after_x]-x[idx_before_x]))*y[idx_before_x] + ((x_inter[n]-x[idx_before_x])/(x[idx_after_x]-x[idx_before_x]))*y[idx_after_x]
+                I_known, idx = value_in_list_returns_I_idx(x_inter[n],x)
+                if I_known is True:
+                    y_inter[n] = y[idx]
+                    if idx == 0:
+                        y_inter_deriv[n] = coefs[0,1]
+                    elif idx == M-1:
+                        y_inter_deriv[n] = coefs[M-1,1]
+                    else:
+                        y_inter_deriv[n] = 0.5*coefs[idx-1,1] + 0.5*coefs[idx,1]
+                        y_inter_deriv[n] = coefs[idx,1]
+                else:
+                    idx_before, idx_after = idx_before_after_in_iterable(x_inter[n],x)
+                    if interpolation_options["transition"] == "smooth":
+                        w_before = (x[idx_after]-x_inter[n])/(x[idx_after]-x[idx_before])
+                        y_before, y_after = coefs[idx_before,0] + coefs[idx_before,1]*x_inter[n], coefs[idx_after,0] + coefs[idx_after,1]*x_inter[n]
+
+                        y_inter[n] = w_before*y_before + (1-w_before)*y_after
+                        y_inter_deriv[n] = w_before*coefs[idx_before,1] + (1-w_before)*coefs[idx_after,1]
+                    else:
+                        y_inter[n] = coefs[idx_before,0] + coefs[idx_before,1]*x_inter[n]
+                        y_inter_deriv[n] = coefs[idx_before,1]
     elif interpolation_options["method"] == "hermite":
-        indices = []
-        for item in x:
-            I_idx, idx = value_in_list_returns_I_idx(item,x_inter)
-            if I_idx is True:
-                indices.append(value_in_list_returns_I_idx(item,x_inter)[1])
-        l, r = -int((interpolation_options["degree"]+1)/2),int(interpolation_options["degree"]/2)
-        for i in range(-l,-r+len(x)):
-            coef = hermfit(x[i+l:i+r+1],y[i+l:i+r+1],interpolation_options["degree"])
-            for idx in range(indices[i+l],indices[i+r]+1):
-                y_inter[idx] = hermval(x_inter[idx],coef)
-    return y_inter
+        coefs = np.nan*np.ones([M,interpolation_options["degree"]+1])
+        degrees = np.ones(M, dtype = "int")
+        for m in range(0, M-1):
+            left = min(int(interpolation_options["degree"]/2),m)
+            right = min(M-1-m,int((interpolation_options["degree"]+1)/2))
+            degrees[m] = left + right
+            coefs[m,0:left+right+1] = hermfit(x[m-left:m+right+1],y[m-left:m+right+1],degrees[m])
+        coefs[M-1], degrees[M-1] = coefs[M-2], degrees[M-2]
+        for n in range(0,N):
+            if x_inter[n] < x[0] or x_inter[n] > x[M-1]:
+                y_inter[n], y_inter_deriv[n] = extrapolate(x_inter[n],x,y,extrapolation_options = interpolation_options)
+            else:
+                I_known, idx = value_in_list_returns_I_idx(x_inter[n],x)
+                if I_known is True:
+                    y_inter[n] = y[idx]
+                    y_inter_deriv[n] = hermval(x_inter[n],hermder(coefs[idx,0:degrees[idx]+1]))
+                else:
+                    idx_before, idx_after = idx_before_after_in_iterable(x_inter[n],x)
+                    if interpolation_options["transition"] == "smooth":
+                        w_before = (x[idx_after]-x_inter[n])/(x[idx_after]-x[idx_before])
+                        y_before = hermval(x_inter[n],coefs[idx_before,0:degrees[idx_before]+1])
+                        y_after = hermval(x_inter[n],coefs[idx_after,0:degrees[idx_after]+1])
+                        y_inter[n] = w_before*y_before + (1-w_before)*y_after
+                        y_inter_deriv[n] = w_before*hermval(x_inter[n],hermder(coefs[idx_before,0:degrees[idx_before]+1])) + (1-w_before)*hermval(x_inter[n],hermder(coefs[idx_after,0:degrees[idx_after]+1]))
+                    else:
+                        y_inter[n] = hermval(x_inter[n],coefs[idx_before,0:degrees[idx_before]+1])
+                        y_inter_deriv[n] = hermval(x_inter[n],hermder(coefs[idx_before,0:degrees[idx_before]+1]))
+    elif interpolation_options["method"] == "nelson_siegel":
+        coefs, type_fit = np.nan*np.ones([M,3]), M*[None]
+        for m in range(1,M-1):
+            if (y[m] > y[m-1] and y[m+1] > y[m]) or (y[m] < y[m-1] and y[m+1] < y[m]):
+                coefs[m,0:3] = nelson_siegel_coef(x[m]-x[m-1],x[m+1]-x[m-1],y[m-1],y[m],y[m+1])
+                type_fit[m] = "nelson_siegel"
+            else:
+                coefs[m,0:3] = hermfit(x[m-1:m+2],y[m-1:m+2],2)
+                type_fit[m] = "hermite"
+        for n in range(0,N):
+            if x_inter[n] < x[0] or x_inter[n] > x[M-1]:
+                y_inter[n], y_inter_deriv[n] = extrapolate(x_inter[n],x,y,extrapolation_options = interpolation_options)
+            else:
+                I_known, idx = value_in_list_returns_I_idx(x_inter[n],x)
+                if I_known is True:
+                    y_inter[n] = y[idx]
+                    if idx == 0:
+                        if type_fit[idx+1] == "nelson_siegel":
+                            x_ns = x_inter[n] - x[idx]
+                            y_inter_deriv[n] = -coefs[idx+1,1]*coefs[idx+1,2]*np.exp(-coefs[idx+1,2]*x_ns)
+                        elif type_fit[idx+1] == "hermite":
+                            y_inter_deriv[n] = hermval(x_inter[n],hermder(coefs[idx+1,0:3]))
+                    elif idx == M-1:
+                        if type_fit[idx-1] == "nelson_siegel":
+                            x_ns = x_inter[n] - x[idx-2]
+                            y_inter_deriv[n] = -coefs[idx-1,1]*coefs[idx-1,2]*np.exp(-coefs[idx-1,2]*x_ns)
+                        elif type_fit[idx-1] == "hermite":
+                            y_inter_deriv[n] = hermval(x_inter[n],hermder(coefs[idx-1,0:3]))
+                    else:
+                        if type_fit[idx] == "nelson_siegel":
+                            x_ns = x_inter[n] - x[idx-1]
+                            y_inter_deriv[n] = -coefs[idx,1]*coefs[idx,2]*np.exp(-coefs[idx,2]*x_ns)
+                        elif type_fit[idx] == "hermite":
+                            y_inter_deriv[n] = hermval(x_inter[n],hermder(coefs[idx,0:3]))
+                else:
+                    idx_before, idx_after = idx_before_after_in_iterable(x_inter[n],x)
+                    if idx_before == 0:
+                        if type_fit[idx_before+1] == "nelson_siegel":
+                            x_ns = x_inter[n] - x[idx_before]
+                            y_inter[n], y_inter_deriv[n] = coefs[idx_after,0] + coefs[idx_after,1]*np.exp(-coefs[idx_after,2]*x_ns), -coefs[idx_after,1]*coefs[idx_after,2]*np.exp(-coefs[idx_after,2]*x_ns)
+                            y_inter_deriv[n] = -coefs[idx_after,1]*coefs[idx_after,2]*np.exp(-coefs[idx_after,2]*x_ns)
+                        elif type_fit[idx_before+1] == "hermite":
+                            y_inter[n], y_inter_deriv[n] = hermval(x_inter[n],coefs[idx_after,0:3]), hermval(x_inter[n],hermder(coefs[idx_after,0:3]))
+                    elif idx_after == M-1:
+                        if type_fit[idx_after-1] == "nelson_siegel":
+                            x_ns = x_inter[n] - x[idx_after-2]
+                            y_inter[n], y_inter_deriv[n] = coefs[idx_after-1,0] + coefs[idx_after-1,1]*np.exp(-coefs[idx_after-1,2]*x_ns), -coefs[idx_after-1,1]*coefs[idx_after-1,2]*np.exp(-coefs[idx_after-1,2]*x_ns)
+                        elif type_fit[idx_after-1] == "hermite":
+                            y_inter[n], y_inter_deriv[n] = hermval(x_inter[n],coefs[idx_after-1,0:3]), hermval(x_inter[n],hermder(coefs[idx_after-1,0:3]))
+                    else:
+                        if interpolation_options["transition"] == "smooth":
+                            w_left = (x[idx_after]-x_inter[n])/(x[idx_after]-x[idx_before])
+                            if type_fit[idx_before] == "nelson_siegel":
+                                x_left = x_inter[n] - x[idx_before-1]
+                                y_left, y_left_deriv = coefs[idx_before,0] + coefs[idx_before,1]*np.exp(-coefs[idx_before,2]*x_left), -coefs[idx_before,1]*coefs[idx_before,2]*np.exp(-coefs[idx_before,2]*x_left)
+                            elif type_fit[idx_before] == "hermite":
+                                y_left, y_left_deriv = hermval(x_inter[n],coefs[idx_before,0:3]), hermval(x_inter[n],hermder(coefs[idx_before,0:3]))
+                            if type_fit[idx_after] == "nelson_siegel":
+                                x_right = x_inter[n] - x[idx_after-1]
+                                y_right, y_right_deriv = coefs[idx_after,0] + coefs[idx_after,1]*np.exp(-coefs[idx_after,2]*x_right), -coefs[idx_after,1]*coefs[idx_after,2]*np.exp(-coefs[idx_after,2]*x_right)
+                            elif type_fit[idx_after] == "hermite":
+                                y_right, y_right_deriv = hermval(x_inter[n],coefs[idx_after,0:3]), hermval(x_inter[n],hermder(coefs[idx_after,0:3]))
+                            y_inter[n], y_inter_deriv[n] = w_left*y_left + (1-w_left)*y_right, w_left*y_left_deriv + (1-w_left)*y_right_deriv
+                        else:
+                            if type_fit[idx_before] == "nelson_siegel":
+                                x_ns = x_inter[n] - x[idx_before-1]
+                                y_inter[n], y_inter_deriv[n] = coefs[idx_before,0] + coefs[idx_before,1]*np.exp(-coefs[idx_before,2]*x_ns), -coefs[idx_before,1]*coefs[idx_before,2]*np.exp(-coefs[idx_before,2]*x_ns)
+                            elif type_fit[idx_before] == "hermite":
+                                y_inter[n], y_inter_deriv[n] = hermval(x_inter[n],coefs[idx_before,0:3]), hermval(x_inter[n],hermder(coefs[idx_before,0:3]))
+    return y_inter, y_inter_deriv
+
+def nelson_siegel_coef(x1,x2,y0,y1,y2):
+    alpha = (y0-y2)/(y0-y1)
+    b_hat = 2*(alpha*x1-x2)/(alpha*x1**2-x2**2)
+    result = minimize(nelson_siegel_coef_obj,b_hat,method = "nelder-mead",args = (alpha,x1,x2),options={'xatol': 1e-12,"disp": False})
+    if type(result.x) == np.ndarray:
+        b = result.x[0]
+    elif type(result.x) == int or type(result.x) == int or type(result.x) == np.int32 or type(result.x) == np.int64 or type(result.x) == np.float64:
+        b = result.x
+    a = (y0-y1)/(1-np.exp(-b*x1))
+    f_inf = y0 - a
+    return f_inf, a, b
+
+def nelson_siegel_coef_obj(b,alpha,x1,x2):
+    se = (alpha-(1-np.exp(-b*x2))/(1-np.exp(-b*x1)))**2
+    return se
 
 def swap_indices(data,T):
-    # Finding the swap indices
     for item in data:
         if item["instrument"] == "swap":
             indices = []
@@ -1149,7 +1423,7 @@ def zcb_curve_fra_fit_obj(R_fra,T_fra,T_known,T_endo,T_all,R_all,fra_data,interp
 def zcb_curve_swap_fit_obj(R_knot,T_known,T_knot,T_all,R_known,swap_data,interpolation_options,scaling = 1):
     sse = 0
     R_knot = list(R_knot)
-    R_all = interpolate(T_known + T_knot,R_known + R_knot,T_all,interpolation_options)
+    R_all, R_deriv = interpolate(T_all,T_known + T_knot,R_known + R_knot,interpolation_options)
     p = zcb_prices_from_spot_rates(T_all,R_all)
     for n, swap in enumerate(swap_data):
         if swap["fixed_freq"] == "quarterly":
@@ -1166,20 +1440,20 @@ def zcb_curve_swap_fit_obj(R_knot,T_known,T_knot,T_all,R_known,swap_data,interpo
     sse *= scaling
     return sse
 
-def value_in_list_returns_I_idx(value,list):
+def value_in_list_returns_I_idx(value,list,precision = 1e-12):
     output = False, None
     for i, item in enumerate(list):
-        if abs(value-item) < 1e-6:
+        if abs(value-item) < precision:
             output = True, i
             break
     return output
 
-def idx_before_after_in_list(value,list):
+def idx_before_after_in_iterable(value,list):
     idx_before, idx_after = None, None
     if value < list[0]:
-        idx_before, idx_after = 0, 1
+        idx_before, idx_after = None, 0
     elif list[-1] < value:
-        idx_before, idx_after = len(list)-2, len(list) - 1
+        idx_before, idx_after = len(list) - 1, None
     else:
         for i in range(0,len(list)):
             if list[i] < value:
@@ -1189,10 +1463,10 @@ def idx_before_after_in_list(value,list):
                 break
     return idx_before, idx_after
 
-def value_in_list_of_dict_returns_I_idx(value,L,name):
+def value_in_list_of_dict_returns_I_idx(value,L,name,precision = 1e-12):
     output = False, None
     for item in L:
-        if abs(value-item[name]) < 1e-6:
+        if abs(value-item[name]) < precision:
             output = True, item
             break
     return output
