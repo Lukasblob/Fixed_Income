@@ -1145,11 +1145,18 @@ def black_swaption_theta(sigma,T,K,S,r,R,type = "call"):
     return theta
 
 def black_swaption_iv(C,T,K,S,R,type = "call", iv0 = 0.2, max_iter = 1000, prec = 1.0e-10):
-    #C is price
-    #R is par swap rate
-    #T is time to start
-    #S is accrual factor of swap
-    #K is strike
+    """
+    Calculate the implied volatility of a swaption using the Black model.
+
+    Args:
+        C (float): The price of the swaption.
+        T (float): The time to start.
+        K (float): The strike.
+        S (float): The accrual factor of the swap.
+        R (float): The par swap rate.
+    Returns:
+        float: The implied volatility.
+    """
     iv = iv0
     for i in range(0,max_iter):
         price = black_swaption_price(iv,T,K,S,R,type = "call")
