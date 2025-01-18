@@ -759,6 +759,7 @@ def euro_option_price_ho_lee(K,T1,T2,p_T1,p_T2,sigma,type = "call"):
     return price
 
 def caplet_prices_ho_lee(strike,sigma,T,p):
+    #T should include time 0
     price_caplet = np.zeros([len(T)])
     for i in range(2,len(T)):
         price_caplet[i] = (1 + (T[i]-T[i-1])*strike)*euro_option_price_ho_lee(1/(1 + (T[i]-T[i-1])*strike),T[i-1],T[i],p[i-1],p[i],sigma,type = "put")
